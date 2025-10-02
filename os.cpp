@@ -60,19 +60,18 @@ public:
 
     T pop()
     {
-        if (count == 0)
-            return nullptr;
-        out = buffer[head];
+        if (empty())
+            throw std::runtime_error("Queue empty");
+        T item = buffer[head];
         head = (head + 1) % Capacity;
         count--;
-        return out;
+        return item;
     }
 
-    T front()
+    T front() const
     {
         if (empty())
             return nullptr;
-
         return buffer[head];
     }
 
@@ -86,45 +85,44 @@ public:
 class MemoryManager
 {
 private:
-    static const int MAX_READY_QUEUE_LENGTH = 3; // mem size
-    static const int MAX_JOB_QUEUE_LENGTH = 4;
-    static const int MAX_REQUEUE_BUFFER_LENGTH = 10;
-    static const int MAX_PAGE_FILE_SIZE = 5;
-
     int tasks_admitted = 0;
+
+    static const int MAX_READY_QUEUE_LENGTH = 3; // mem size
+    static const int MAX_JOB_QUEUE_LENGTH = 6;
+    static const int MAX_PAGE_FILE_SIZE = 5;
 
     StaticQueue<Task *, MAX_READY_QUEUE_LENGTH> ready_queue;
     StaticQueue<Task *, MAX_JOB_QUEUE_LENGTH> job_queue;
-    StaticQueue<Task *, MAX_REQUEUE_BUFFER_LENGTH> requeue_buffer;
     StaticQueue<Task *, MAX_PAGE_FILE_SIZE> page_file;
 
     std::vector<Task *> terminated_tasks;
 
 public:
-    bool allocate(Task *task)
-    {
-        return false;
-    }
-    void deallocate(Task *task)
-    {
-    }
-    void check_page_file(ProcessManager *pm)
-    {
-    }
-
     void add_to_ready_queue()
     {
-        while (!requeue_buffer.empty())
-        {
-            ready_queue.push(requeue_buffer.pop());
-        }
 
-        if (ready_queue.size() < MAX_READY_QUEUE_LENGTH && !job_queue.empty())
+        if (!ready_queue.full())
         {
-            Task *task = job_queue.front();
-            job_queue.pop();
-            task->set_state("ready");
-            ready_queue.push(task);
+
+            Task *task = nullptr;
+
+            if (!job_queue.empty())
+            {
+                task = job_queue.front();
+                job_queue.pop();
+            }
+            else if (!page_file.empty())
+            {
+                task = page_file.front();
+                page_file.pop();
+            }
+
+            if (task)
+            {
+                std::cout << "adding: " << task->get_name() << std::endl;
+                task->set_state("ready");
+                ready_queue.push(task);
+            }
         }
     }
 
@@ -134,11 +132,20 @@ public:
         std::cout << "Task finished: " << task->get_name() << "\n";
     }
 
-    void add_to_job_qeue(Task *task, int task_size)
+    void add_to_job_queue(Task *task, int task_size)
     {
-        tasks_admitted++;
-        job_queue.push(task);
-        std::cout << "Task submitted" << task->get_name() << std::endl;
+
+        if (!job_queue.full())
+        {
+            tasks_admitted++;
+            job_queue.push(task);
+            std::cout << "Task submitted: " << task->get_name() << std::endl;
+            std::cout << "job queue size: " << job_queue.size() << std::endl;
+        }
+        else
+        {
+            std::cout << "Job queue full... upgrade your system" << std::endl;
+        }
     }
 
     Task *get_ready_task()
@@ -150,7 +157,25 @@ public:
         return task;
     }
 
-    void add_to_requeue_buffer(Task *task) { requeue_buffer.push(task); }
+    void add_to_ready_or_page(Task *task)
+    {
+        if (ready_queue.full())
+        {
+            if (!page_file.full())
+            {
+                page_file.push(task);
+            }
+            else
+            {
+                std::cout << "page file full.....sorry. Terminating task anyway" << std::endl;
+                task_terminated(task);
+            }
+        }
+        else
+        {
+            ready_queue.push(task);
+        }
+    }
     std::vector<Task *> get_terminated_tasks() { return terminated_tasks; }
     int get_tasks_submitted() { return tasks_admitted; }
 };
@@ -173,6 +198,7 @@ public:
         if (!task_running)
         {
             Task *task = mm->get_ready_task();
+            std::cout << "running: " << task->get_name() << std::endl;
 
             int new_run_time = task->get_run_time() - burst_time;
 
@@ -193,7 +219,7 @@ public:
                 std::this_thread::sleep_for(std::chrono::milliseconds(burst_time));
 
                 task->set_state("ready");
-                mm->add_to_requeue_buffer(task);
+                mm->add_to_ready_or_page(task);
                 task_running = false;
             }
         }
@@ -227,8 +253,8 @@ public:
     {
         int run_time = rand() % 50 + 10; // random between 10–60ms
         Task *task = new Task(++task_id_counter, name, run_time, get_now());
-        mm.add_to_job_qeue(task, 10);
         std::cout << "Created task: " << task->get_name() << " with runtime " << run_time << "ms\n";
+        mm.add_to_job_queue(task, 10);
     }
 
     void start_scheduler(int tick_ms)
