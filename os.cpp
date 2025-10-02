@@ -36,18 +36,24 @@ public:
 
 class MemoryManager;
 class ProcessManager;
+class IOManager;
 
 class MemoryManager
 {
 private:
-    const int MAX_READY_QUEUE_LENGTH = 3;
+    static const int MAX_READY_QUEUE_LENGTH = 3; // mem size
+    static const int MAX_JOB_QUEUE_LENGTH = 4;
+    static const int MAX_REQUEUE_BUFFER_LENGTH = 10;
+    static const int MAX_PAGE_FILE_SIZE = 5;
 
     int tasks_admitted = 0;
-    std::queue<Task *> ready_queue;
-    std::queue<Task *> job_queue;
-    std::queue<Task *> requeue_buffer;
+
+    Task ready_queue[MAX_READY_QUEUE_LENGTH];
+    Task job_queue[MAX_JOB_QUEUE_LENGTH];
+    Task requeue_buffer[MAX_REQUEUE_BUFFER_LENGTH];
+    Task page_file[MAX_PAGE_FILE_SIZE];
+
     std::vector<Task *> terminated_tasks;
-    std::vector<Task *> page_file;
 
 public:
     bool allocate(Task *task)
@@ -65,8 +71,7 @@ public:
     {
         while (!requeue_buffer.empty())
         {
-            ready_queue.push(requeue_buffer.front());
-            requeue_buffer.pop();
+            ready_queue[] requeue_buffer.pop();
         }
 
         if (ready_queue.size() < MAX_READY_QUEUE_LENGTH && !job_queue.empty())
@@ -150,7 +155,7 @@ public:
     }
 };
 
-class Scheduler
+class IOManager
 {
 };
 
