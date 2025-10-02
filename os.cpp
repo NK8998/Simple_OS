@@ -7,6 +7,10 @@
 #include <string>
 #include <map>
 
+class MemoryManager;
+class ProcessManager;
+class IOManager;
+
 struct MemoryBlock
 {
     int start;
@@ -34,9 +38,50 @@ public:
     void set_state(const std::string &s) { state = s; }
 };
 
-class MemoryManager;
-class ProcessManager;
-class IOManager;
+template <typename T, size_t Capacity>
+class StaticQueue
+{
+private:
+    T buffer[Capacity];
+    size_t head = 0;
+    size_t tail = 0;
+    size_t count = 0;
+
+public:
+    bool push(const T &item)
+    {
+        if (count == Capacity)
+            return false;
+        buffer[tail] = item;
+        tail = (tail + 1) % Capacity;
+        count++;
+        return true;
+    }
+
+    T pop()
+    {
+        if (count == 0)
+            return nullptr;
+        out = buffer[head];
+        head = (head + 1) % Capacity;
+        count--;
+        return out;
+    }
+
+    T front()
+    {
+        if (empty())
+            return nullptr;
+
+        return buffer[head];
+    }
+
+    bool empty() const { return count == 0; }
+    bool full() const { return count == Capacity; }
+    size_t size() const { return count; }
+
+    void clear() { head = tail = count = 0; }
+};
 
 class MemoryManager
 {
@@ -48,10 +93,10 @@ private:
 
     int tasks_admitted = 0;
 
-    Task ready_queue[MAX_READY_QUEUE_LENGTH];
-    Task job_queue[MAX_JOB_QUEUE_LENGTH];
-    Task requeue_buffer[MAX_REQUEUE_BUFFER_LENGTH];
-    Task page_file[MAX_PAGE_FILE_SIZE];
+    StaticQueue<Task *, MAX_READY_QUEUE_LENGTH> ready_queue;
+    StaticQueue<Task *, MAX_JOB_QUEUE_LENGTH> job_queue;
+    StaticQueue<Task *, MAX_REQUEUE_BUFFER_LENGTH> requeue_buffer;
+    StaticQueue<Task *, MAX_PAGE_FILE_SIZE> page_file;
 
     std::vector<Task *> terminated_tasks;
 
@@ -71,7 +116,7 @@ public:
     {
         while (!requeue_buffer.empty())
         {
-            ready_queue[] requeue_buffer.pop();
+            ready_queue.push(requeue_buffer.pop());
         }
 
         if (ready_queue.size() < MAX_READY_QUEUE_LENGTH && !job_queue.empty())
@@ -89,7 +134,7 @@ public:
         std::cout << "Task finished: " << task->get_name() << "\n";
     }
 
-    void submit_task(Task *task, int task_size)
+    void add_to_job_qeue(Task *task, int task_size)
     {
         tasks_admitted++;
         job_queue.push(task);
@@ -182,7 +227,7 @@ public:
     {
         int run_time = rand() % 50 + 10; // random between 10–60ms
         Task *task = new Task(++task_id_counter, name, run_time, get_now());
-        mm.submit_task(task, 10);
+        mm.add_to_job_qeue(task, 10);
         std::cout << "Created task: " << task->get_name() << " with runtime " << run_time << "ms\n";
     }
 
