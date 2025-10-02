@@ -5,6 +5,13 @@
 #include <chrono>
 #include <random>
 #include <string>
+#include <map>
+
+struct MemoryBlock
+{
+    int start;
+    int size;
+};
 
 class Task
 {
@@ -27,51 +34,13 @@ public:
     void set_state(const std::string &s) { state = s; }
 };
 
-class OS
+class ProcessManager
 {
 private:
     const int burst_time = 1; // time slice (ms)
-    const int MAX_READY_QUEUE_LENGTH = 3;
     bool task_running = false;
 
-    std::queue<Task *> ready_queue;
-    std::queue<Task *> job_queue;
-    std::queue<Task *> requeue_buffer;
-    std::vector<Task *> terminated_tasks;
-
-    int task_id_counter = 0;
-
 public:
-    void create_task(const std::string &name)
-    {
-        int run_time = rand() % 50 + 10; // random between 10–60ms
-        Task *task = new Task(++task_id_counter, name, run_time, get_now());
-        job_queue.push(task);
-        std::cout << "Created task: " << task->get_name() << " with runtime " << run_time << "ms\n";
-    }
-
-    void start_scheduler(int iterations, int tick_ms)
-    {
-        for (int i = 0; i < iterations; i++)
-        {
-            add_to_ready_queue();
-            run_task();
-            std::this_thread::sleep_for(std::chrono::milliseconds(tick_ms));
-        }
-        std::cout << "\n=== Terminated Tasks ===\n";
-        for (auto *task : terminated_tasks)
-        {
-            std::cout << "✔ " << task->get_name() << " (id " << task->get_id() << ")\n";
-        }
-    }
-
-private:
-    long get_now()
-    {
-        using namespace std::chrono;
-        return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
-    }
-
     void run_task()
     {
         if (!task_running && !ready_queue.empty())
@@ -105,6 +74,35 @@ private:
             }
         }
     }
+};
+
+class MemoryManager
+{
+private:
+    const int MAX_READY_QUEUE_LENGTH = 3;
+
+    int tasks_admitted = 0;
+    std::queue<Task *> ready_queue;
+    std::queue<Task *> job_queue;
+    std::queue<Task *> requeue_buffer;
+    std::vector<Task *> terminated_tasks;
+    // std::vector<MemoryBlock> free_blocks;
+    std::vector<Task *> page_file;
+    // std::map<Task *, MemoryBlock> task_allocations;
+
+    int total_ram = 100;
+    int used_ram = 0;
+
+public:
+    bool allocate(Task *task)
+    {
+    }
+    void deallocate(Task *task)
+    {
+    }
+    void check_page_file(ProcessManager *pm)
+    {
+    }
 
     void add_to_ready_queue()
     {
@@ -122,6 +120,59 @@ private:
             ready_queue.push(task);
         }
     }
+
+    void submit_task(Task *task, int task_size)
+    {
+        tasks_admitted++;
+        job_queue.push(task);
+        std::cout << "Task submitted" << task->get_name() << std::endl;
+    }
+
+    std::vector<Task *> get_terminated_tasks() { return terminated_tasks; }
+    int get_tasks_submitted() { return tasks_admitted; }
+};
+
+class Scheduler
+{
+};
+
+class OS
+{
+private:
+    int task_id_counter = 0;
+    ProcessManager *pm = new ProcessManager();
+    MemoryManager *mm = new MemoryManager();
+
+public:
+    long get_now()
+    {
+        using namespace std::chrono;
+        return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+    }
+
+    void create_task(const std::string &name)
+    {
+        int run_time = rand() % 50 + 10; // random between 10–60ms
+        Task *task = new Task(++task_id_counter, name, run_time, get_now());
+        pm->submit_task(task);
+        std::cout << "Created task: " << task->get_name() << " with runtime " << run_time << "ms\n";
+    }
+
+    void start_scheduler(int tick_ms)
+    {
+        while (pm->get_terminated_tasks().size() < pm->get_tasks_submitted())
+        {
+            mm->check_page_file(pm);
+            pm->add_to_ready_queue();
+            pm->run_task();
+            std::this_thread::sleep_for(std::chrono::milliseconds(tick_ms));
+        }
+        std::cout << "\n=== Terminated Tasks ===\n";
+        for (auto *task : pm->get_terminated_tasks())
+        {
+            std::cout << "✔ " << task->get_name() << " (id " << task->get_id() << ")\n";
+        }
+    }
 };
 
 int main()
@@ -136,6 +187,6 @@ int main()
     os.create_task("file explorer");
     os.create_task("terminal");
 
-    os.start_scheduler(200, 20); // run for 200 ticks, 20ms each
+    os.start_scheduler(20); // run for 200 ticks, 20ms each
     return 0;
 }
