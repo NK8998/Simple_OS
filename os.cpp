@@ -213,7 +213,7 @@ public:
                 task->set_state("running");
                 task_running = true;
 
-                std::cout << "▶ Running Task: " << task->get_name()
+                std::cout << "-> Running Task: " << task->get_name()
                           << " (remaining: " << new_run_time << ")\n";
 
                 std::this_thread::sleep_for(std::chrono::milliseconds(burst_time));
@@ -268,7 +268,7 @@ public:
         std::cout << "\n=== Terminated Tasks ===\n";
         for (auto *task : mm.get_terminated_tasks())
         {
-            std::cout << "✔ " << task->get_name() << " (id " << task->get_id() << ")\n";
+            std::cout << "||  " << task->get_name() << " (id " << task->get_id() << ")\n";
         }
     }
 };
