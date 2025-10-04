@@ -6,6 +6,7 @@
 #include <random>
 #include <string>
 #include <map>
+#include <thread>
 
 class MemoryManager;
 class ProcessManager;
@@ -25,10 +26,11 @@ private:
     std::string state;
     int run_time;
     long admission_time;
+    long io_task_duration;
 
 public:
-    Task(int id, std::string name, int run_time, long admission_time)
-        : id(id), name(std::move(name)), run_time(run_time), admission_time(admission_time), state("new") {}
+    Task(int id, std::string name, int run_time, long admission_time, long io_duration)
+        : id(id), name(std::move(name)), run_time(run_time), admission_time(admission_time), state("new"), io_task_duration(io_duration) {}
 
     int get_id() const { return id; }
     std::string get_name() const { return name; }
@@ -36,6 +38,8 @@ public:
     void set_run_time(int rt) { run_time = rt; }
     std::string get_state() const { return state; }
     void set_state(const std::string &s) { state = s; }
+    long get_io_duration() const { return io_task_duration; }
+    void set_io_duration(long io_duration) { io_task_duration = io_duration; }
 };
 
 template <typename T, size_t Capacity>
@@ -90,10 +94,12 @@ private:
     static const int MAX_READY_QUEUE_LENGTH = 3; // mem size
     static const int MAX_JOB_QUEUE_LENGTH = 6;
     static const int MAX_PAGE_FILE_SIZE = 5;
+    static const int MAX_WAITING_LENGTH = 3;
 
     StaticQueue<Task *, MAX_READY_QUEUE_LENGTH> ready_queue;
     StaticQueue<Task *, MAX_JOB_QUEUE_LENGTH> job_queue;
     StaticQueue<Task *, MAX_PAGE_FILE_SIZE> page_file;
+    StaticQueue<Task *, MAX_WAITING_LENGTH> waiting_queue;
 
     std::vector<Task *> terminated_tasks;
 
@@ -157,6 +163,29 @@ public:
         return task;
     }
 
+    Task *get_waiting_task()
+    {
+        if (!waiting_queue.empty())
+        {
+            return waiting_queue.pop();
+        }
+        return nullptr;
+    }
+
+    void add_to_waiting_queue(Task *task)
+    {
+        if (!waiting_queue.full())
+        {
+            waiting_queue.push(task);
+        }
+        else
+        {
+            // If full then move task to ready queue or page so it can be retried later
+            add_to_ready_or_page(task);
+            std::cout << "waiting queue full, will retry later" << std::endl;
+        }
+    }
+
     void add_to_ready_or_page(Task *task)
     {
         if (ready_queue.full())
@@ -198,8 +227,6 @@ public:
         if (!task_running)
         {
             Task *task = mm->get_ready_task();
-            std::cout << "running: " << task->get_name() << std::endl;
-
             int new_run_time = task->get_run_time() - burst_time;
 
             if (new_run_time <= 0)
@@ -209,18 +236,28 @@ public:
             }
             else
             {
-                task->set_run_time(new_run_time);
-                task->set_state("running");
-                task_running = true;
+                if (task->get_io_duration() > 0)
+                {
+                    std::cout << "Sending " << task->get_name() << "to waiting queue" << std::endl;
+                    task->set_state("waiting");
+                    mm->add_to_waiting_queue(task);
+                    task_running = false;
+                }
+                else
+                {
+                    task->set_run_time(new_run_time);
+                    task->set_state("running");
+                    task_running = true;
 
-                std::cout << "-> Running Task: " << task->get_name()
-                          << " (remaining: " << new_run_time << ")\n";
+                    std::cout << "-> Running Task: " << task->get_name()
+                              << " (remaining: " << new_run_time << ")" << "IO Duration: " << task->get_io_duration() << "\n";
 
-                std::this_thread::sleep_for(std::chrono::milliseconds(burst_time));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(burst_time));
 
-                task->set_state("ready");
-                mm->add_to_ready_or_page(task);
-                task_running = false;
+                    task->set_state("ready");
+                    mm->add_to_ready_or_page(task);
+                    task_running = false;
+                }
             }
         }
     }
@@ -228,19 +265,45 @@ public:
 
 class IOManager
 {
+private:
+    MemoryManager *mm;
+
+public:
+    void set_mm_pointer(MemoryManager *mm) { this->mm = mm; }
+
+    void handle_waiting_tasks()
+    {
+        Task *task = mm->get_waiting_task();
+        if (task)
+        {
+            std::string name = task->get_name();
+
+            std::cout << "Fulfilling request for " << name << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(task->get_io_duration()));
+
+            task->set_io_duration(0);
+            // add back to ready queue
+            mm->add_to_ready_or_page(task);
+            std::cout << "Done fulfilling request for " << name << std::endl;
+        }
+    }
 };
 
 class OS
 {
 private:
+    int tick_ms;
     int task_id_counter = 0;
     MemoryManager mm;
     ProcessManager pm;
+    IOManager im;
 
 public:
-    OS()
+    OS(int tick)
     {
+        tick_ms = tick;
         pm.set_mm_pointer(&mm);
+        im.set_mm_pointer(&mm);
     }
 
     long get_now()
@@ -251,19 +314,46 @@ public:
 
     void create_task(const std::string &name)
     {
-        int run_time = rand() % 50 + 10; // random between 10–60ms
-        Task *task = new Task(++task_id_counter, name, run_time, get_now());
+        int run_time = rand() % 50 + 10;
+        long io_duration = rand() % 100 + 10;
+
+        Task *task = new Task(++task_id_counter, name, run_time, get_now(), io_duration);
         std::cout << "Created task: " << task->get_name() << " with runtime " << run_time << "ms\n";
         mm.add_to_job_queue(task, 10);
     }
 
-    void start_scheduler(int tick_ms)
+    void start_main_thread()
     {
         while (mm.get_terminated_tasks().size() < mm.get_tasks_submitted())
         {
             mm.add_to_ready_queue();
             pm.run_task();
             std::this_thread::sleep_for(std::chrono::milliseconds(tick_ms));
+        }
+    }
+
+    void start_io_thread()
+    {
+        while (mm.get_terminated_tasks().size() < mm.get_tasks_submitted())
+        {
+            im.handle_waiting_tasks();
+            std::this_thread::sleep_for(std::chrono::microseconds(tick_ms));
+        }
+    }
+
+    void start_scheduler()
+    {
+        std::thread main_thread(&OS::start_main_thread, this);
+        std::thread io_thread(&OS::start_io_thread, this);
+
+        if (main_thread.joinable())
+        {
+            main_thread.join();
+        }
+
+        if (io_thread.joinable())
+        {
+            io_thread.join();
         }
         std::cout << "\n=== Terminated Tasks ===\n";
         for (auto *task : mm.get_terminated_tasks())
@@ -277,7 +367,8 @@ int main()
 {
     srand(time(nullptr));
 
-    OS os;
+    OS os(20);
+
     os.create_task("browser");
     os.create_task("player");
     os.create_task("editor");
@@ -285,6 +376,6 @@ int main()
     os.create_task("file explorer");
     os.create_task("terminal");
 
-    os.start_scheduler(20); // run for 200 ticks, 20ms each
+    os.start_scheduler();
     return 0;
 }
