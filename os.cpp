@@ -7,6 +7,15 @@
 #include <string>
 #include <map>
 #include <thread>
+#include <optional>
+#include <mutex>
+
+std::mutex ready_mtx;
+std::mutex job_mtx;
+std::mutex page_mtx;
+std::mutex waiting_mtx;
+std::mutex terminated_mtx;
+std::mutex admitted_mtx;
 
 class MemoryManager;
 class ProcessManager;
@@ -66,16 +75,16 @@ public:
     {
         if (empty())
             throw std::runtime_error("Queue empty");
-        T item = buffer[head];
+        T item = std::move(buffer[head]);
         head = (head + 1) % Capacity;
         count--;
         return item;
     }
 
-    T front() const
+    std::optional<T> front() const
     {
         if (empty())
-            return nullptr;
+            return std::nullopt;
         return buffer[head];
     }
 
@@ -93,8 +102,8 @@ private:
 
     static const int MAX_READY_QUEUE_LENGTH = 3; // mem size
     static const int MAX_JOB_QUEUE_LENGTH = 6;
-    static const int MAX_PAGE_FILE_SIZE = 5;
-    static const int MAX_WAITING_LENGTH = 3;
+    static const int MAX_PAGE_FILE_SIZE = 3;
+    static const int MAX_WAITING_LENGTH = 4;
 
     StaticQueue<Task *, MAX_READY_QUEUE_LENGTH> ready_queue;
     StaticQueue<Task *, MAX_JOB_QUEUE_LENGTH> job_queue;
@@ -107,6 +116,10 @@ public:
     void add_to_ready_queue()
     {
 
+        std::lock_guard<std::mutex> ready_lock(ready_mtx);
+        std::lock_guard<std::mutex> job_lock(job_mtx);
+        std::lock_guard<std::mutex> page_lock(page_mtx);
+
         if (!ready_queue.full())
         {
 
@@ -114,18 +127,31 @@ public:
 
             if (!job_queue.empty())
             {
-                task = job_queue.front();
-                job_queue.pop();
+                auto t = job_queue.front();
+                if (t)
+                {
+                    task = job_queue.pop();
+                }
             }
             else if (!page_file.empty())
             {
-                task = page_file.front();
-                page_file.pop();
+                auto t = page_file.front();
+                if (t)
+                {
+                    task = page_file.pop();
+                }
+            }
+            else
+            {
+                std::cout << "job queue size: " << job_queue.size() << "\n";
+                std::cout << "page queue size: " << page_file.size() << "\n";
+                std::cout << "ready queue size: " << ready_queue.size() << "\n";
+                std::cout << "unhandled operation" << "\n";
             }
 
             if (task)
             {
-                std::cout << "adding: " << task->get_name() << std::endl;
+                std::cout << "adding: " << task->get_name() << "\n";
                 task->set_state("ready");
                 ready_queue.push(task);
             }
@@ -140,32 +166,44 @@ public:
 
     void add_to_job_queue(Task *task, int task_size)
     {
+        std::lock_guard<std::mutex> lock(job_mtx);
 
         if (!job_queue.full())
         {
             tasks_admitted++;
             job_queue.push(task);
-            std::cout << "Task submitted: " << task->get_name() << std::endl;
-            std::cout << "job queue size: " << job_queue.size() << std::endl;
+            std::cout << "Task submitted: " << task->get_name() << "\n";
+            std::cout << "job queue size: " << job_queue.size() << "\n";
         }
         else
         {
-            std::cout << "Job queue full... upgrade your system" << std::endl;
+            std::cout << "Job queue full... upgrade your system" << "\n";
         }
     }
 
     Task *get_ready_task()
     {
+        std::lock_guard<std::mutex> ready_lock(ready_mtx);
+
         if (ready_queue.empty())
             return nullptr;
-        Task *task = ready_queue.front();
-        ready_queue.pop();
-        return task;
+        auto t = ready_queue.front();
+        if (t)
+        {
+            return ready_queue.pop();
+        }
+
+        return nullptr;
     }
 
     Task *get_waiting_task()
     {
-        if (!waiting_queue.empty())
+        std::lock_guard<std::mutex> waiting_lock(waiting_mtx);
+
+        if (waiting_queue.empty())
+            return nullptr;
+        auto t = waiting_queue.front();
+        if (t)
         {
             return waiting_queue.pop();
         }
@@ -174,6 +212,8 @@ public:
 
     void add_to_waiting_queue(Task *task)
     {
+        std::lock_guard<std::mutex> waiting_lock(waiting_mtx);
+
         if (!waiting_queue.full())
         {
             waiting_queue.push(task);
@@ -182,13 +222,20 @@ public:
         {
             // If full then move task to ready queue or page so it can be retried later
             add_to_ready_or_page(task);
-            std::cout << "waiting queue full, will retry later" << std::endl;
+            std::cout << "waiting queue full, will retry later" << "\n";
         }
     }
 
     void add_to_ready_or_page(Task *task)
     {
-        if (ready_queue.full())
+        std::lock_guard<std::mutex> ready_lock(ready_mtx);
+        std::lock_guard<std::mutex> page_lock(page_mtx);
+
+        if (!ready_queue.full())
+        {
+            ready_queue.push(task);
+        }
+        else
         {
             if (!page_file.full())
             {
@@ -196,23 +243,28 @@ public:
             }
             else
             {
-                std::cout << "page file full.....sorry. Terminating task anyway" << std::endl;
+                std::cout << "page file full.....sorry. Terminating task anyway" << "\n";
                 task_terminated(task);
             }
         }
-        else
-        {
-            ready_queue.push(task);
-        }
     }
-    std::vector<Task *> get_terminated_tasks() { return terminated_tasks; }
-    int get_tasks_submitted() { return tasks_admitted; }
+    std::vector<Task *> get_terminated_tasks()
+    {
+
+        std::lock_guard<std::mutex> term_lock(terminated_mtx);
+        return terminated_tasks;
+    }
+    int get_tasks_submitted()
+    {
+        std::lock_guard<std::mutex> admitted_lock(admitted_mtx);
+        return tasks_admitted;
+    }
 };
 
 class ProcessManager
 {
 private:
-    const int burst_time = 1; // time slice (ms)
+    const int burst_time = 4; // time slice (ms)
     bool task_running = false;
     MemoryManager *mm;
 
@@ -233,12 +285,13 @@ public:
             {
                 task->set_state("terminated");
                 mm->task_terminated(task);
+                task_running = false;
             }
             else
             {
                 if (task->get_io_duration() > 0)
                 {
-                    std::cout << "Sending " << task->get_name() << "to waiting queue" << std::endl;
+                    std::cout << "Sending " << task->get_name() << "to waiting queue" << "\n";
                     task->set_state("waiting");
                     mm->add_to_waiting_queue(task);
                     task_running = false;
@@ -278,13 +331,13 @@ public:
         {
             std::string name = task->get_name();
 
-            std::cout << "Fulfilling request for " << name << std::endl;
+            std::cout << "Fulfilling request for " << name << "\n";
             std::this_thread::sleep_for(std::chrono::milliseconds(task->get_io_duration()));
 
             task->set_io_duration(0);
             // add back to ready queue
             mm->add_to_ready_or_page(task);
-            std::cout << "Done fulfilling request for " << name << std::endl;
+            std::cout << "Done fulfilling request for " << name << "\n";
         }
     }
 };
@@ -324,6 +377,8 @@ public:
 
     void start_main_thread()
     {
+        std::cout << "Thread ID: " << std::this_thread::get_id() << "\n";
+
         while (mm.get_terminated_tasks().size() < mm.get_tasks_submitted())
         {
             mm.add_to_ready_queue();
@@ -334,6 +389,8 @@ public:
 
     void start_io_thread()
     {
+        std::cout << "Thread ID: " << std::this_thread::get_id() << "\n";
+
         while (mm.get_terminated_tasks().size() < mm.get_tasks_submitted())
         {
             im.handle_waiting_tasks();
@@ -343,18 +400,20 @@ public:
 
     void start_scheduler()
     {
+
         std::thread main_thread(&OS::start_main_thread, this);
         std::thread io_thread(&OS::start_io_thread, this);
+
+        if (io_thread.joinable())
+        {
+            io_thread.join();
+        }
 
         if (main_thread.joinable())
         {
             main_thread.join();
         }
 
-        if (io_thread.joinable())
-        {
-            io_thread.join();
-        }
         std::cout << "\n=== Terminated Tasks ===\n";
         for (auto *task : mm.get_terminated_tasks())
         {
@@ -365,17 +424,25 @@ public:
 
 int main()
 {
-    srand(time(nullptr));
+    try
+    {
+        srand(time(nullptr));
 
-    OS os(20);
+        OS os(1);
 
-    os.create_task("browser");
-    os.create_task("player");
-    os.create_task("editor");
-    os.create_task("emulator");
-    os.create_task("file explorer");
-    os.create_task("terminal");
+        os.create_task("browser");
+        os.create_task("player");
+        os.create_task("editor");
+        os.create_task("emulator");
+        os.create_task("file explorer");
+        os.create_task("terminal");
 
-    os.start_scheduler();
+        os.start_scheduler();
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "unhandled exception: " << e.what() << std::endl;
+    }
+
     return 0;
 }
