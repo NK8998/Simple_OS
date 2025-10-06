@@ -9,6 +9,7 @@
 #include <thread>
 #include <optional>
 #include <mutex>
+#include <sstream>
 
 std::mutex ready_mtx;
 std::mutex job_mtx;
@@ -16,6 +17,7 @@ std::mutex page_mtx;
 std::mutex waiting_mtx;
 std::mutex terminated_mtx;
 std::mutex admitted_mtx;
+std::mutex print_mtx;
 
 class MemoryManager;
 class ProcessManager;
@@ -26,6 +28,12 @@ struct MemoryBlock
     int start;
     int size;
 };
+
+void safe_print_function(const std::string &s)
+{
+    std::lock_guard<std::mutex> print_lock(print_mtx);
+    std::cout << s << std::endl;
+}
 
 class Task
 {
@@ -143,15 +151,15 @@ public:
             }
             else
             {
-                std::cout << "job queue size: " << job_queue.size() << "\n";
-                std::cout << "page queue size: " << page_file.size() << "\n";
-                std::cout << "ready queue size: " << ready_queue.size() << "\n";
-                std::cout << "unhandled operation" << "\n";
+                safe_print_function("job queue size: " + std::to_string(job_queue.size()));
+                safe_print_function("page queue size: " + std::to_string(page_file.size()));
+                safe_print_function("ready queue size: " + std::to_string(ready_queue.size()));
+                safe_print_function("unhandled operation");
             }
 
             if (task)
             {
-                std::cout << "adding: " << task->get_name() << "\n";
+                safe_print_function("adding: " + task->get_name());
                 task->set_state("ready");
                 ready_queue.push(task);
             }
@@ -160,8 +168,9 @@ public:
 
     void task_terminated(Task *task)
     {
+        std::lock_guard<std::mutex> term_lock(terminated_mtx);
         terminated_tasks.push_back(task);
-        std::cout << "Task finished: " << task->get_name() << "\n";
+        safe_print_function("Task finished: " + task->get_name());
     }
 
     void add_to_job_queue(Task *task, int task_size)
@@ -172,12 +181,12 @@ public:
         {
             tasks_admitted++;
             job_queue.push(task);
-            std::cout << "Task submitted: " << task->get_name() << "\n";
-            std::cout << "job queue size: " << job_queue.size() << "\n";
+            safe_print_function("Task submitted: " + task->get_name());
+            safe_print_function("job queue size: " + std::to_string(job_queue.size()));
         }
         else
         {
-            std::cout << "Job queue full... upgrade your system" << "\n";
+            safe_print_function("Job queue full... upgrade your system");
         }
     }
 
@@ -222,7 +231,7 @@ public:
         {
             // If full then move task to ready queue or page so it can be retried later
             add_to_ready_or_page(task);
-            std::cout << "waiting queue full, will retry later" << "\n";
+            safe_print_function("waiting queue full, will retry later");
         }
     }
 
@@ -243,7 +252,7 @@ public:
             }
             else
             {
-                std::cout << "page file full.....sorry. Terminating task anyway" << "\n";
+                safe_print_function("page file full.....sorry. Terminating task anyway");
                 task_terminated(task);
             }
         }
@@ -291,7 +300,7 @@ public:
             {
                 if (task->get_io_duration() > 0)
                 {
-                    std::cout << "Sending " << task->get_name() << "to waiting queue" << "\n";
+                    safe_print_function("Sending " + task->get_name() + "to waiting queue");
                     task->set_state("waiting");
                     mm->add_to_waiting_queue(task);
                     task_running = false;
@@ -302,8 +311,7 @@ public:
                     task->set_state("running");
                     task_running = true;
 
-                    std::cout << "-> Running Task: " << task->get_name()
-                              << " (remaining: " << new_run_time << ")" << "IO Duration: " << task->get_io_duration() << "\n";
+                    safe_print_function("-> Running Task: " + task->get_name() + " (remaining: " + std::to_string(new_run_time) + ")" + "IO Duration: " + std::to_string(task->get_io_duration()));
 
                     std::this_thread::sleep_for(std::chrono::milliseconds(burst_time));
 
@@ -331,13 +339,13 @@ public:
         {
             std::string name = task->get_name();
 
-            std::cout << "Fulfilling request for " << name << "\n";
+            safe_print_function("Fulfilling request for " + name);
             std::this_thread::sleep_for(std::chrono::milliseconds(task->get_io_duration()));
 
             task->set_io_duration(0);
             // add back to ready queue
             mm->add_to_ready_or_page(task);
-            std::cout << "Done fulfilling request for " << name << "\n";
+            safe_print_function("Done fulfilling request for " + name);
         }
     }
 };
@@ -371,13 +379,17 @@ public:
         long io_duration = rand() % 100 + 10;
 
         Task *task = new Task(++task_id_counter, name, run_time, get_now(), io_duration);
-        std::cout << "Created task: " << task->get_name() << " with runtime " << run_time << "ms\n";
+        safe_print_function("Created task: " + task->get_name() + " with runtime " + std::to_string(run_time));
         mm.add_to_job_queue(task, 10);
     }
 
     void start_main_thread()
     {
-        std::cout << "Thread ID: " << std::this_thread::get_id() << "\n";
+        // std::ostringstream ss;
+
+        // ss << "Thread ID: " << std::this_thread::get_id();
+
+        // safe_print_function(ss.str());
 
         while (mm.get_terminated_tasks().size() < mm.get_tasks_submitted())
         {
@@ -389,7 +401,11 @@ public:
 
     void start_io_thread()
     {
-        std::cout << "Thread ID: " << std::this_thread::get_id() << "\n";
+        // std::ostringstream ss;
+
+        // ss << "Thread ID: " << std::this_thread::get_id();
+
+        // safe_print_function(ss.str());
 
         while (mm.get_terminated_tasks().size() < mm.get_tasks_submitted())
         {
